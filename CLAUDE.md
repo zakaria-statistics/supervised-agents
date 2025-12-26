@@ -19,6 +19,37 @@ Simple Node.js HTTP server with no dependencies. The server exports its instance
 
 The server only starts listening when run directly (`require.main === module`), allowing it to be imported for testing without auto-starting.
 
+## DevOps & Cloud Focus
+
+This project prioritizes DevOps/Cloud learning over application features. The app serves as a target for practicing the full DevOps lifecycle: build, test, deploy, monitor, and operate.
+
+**Goal:** Cover most real-world DevOps phases and use cases. Features should enable practicing CI/CD, containerization, orchestration, observability, and cloud deployment patterns.
+
+### Required Endpoints & Features
+
+When developing features, prioritize DevOps-oriented functionality:
+
+- **`/metrics`** - Prometheus-compatible metrics endpoint (request counts, latencies, error rates)
+- **`/health`** - Health check for container orchestration (Kubernetes liveness/readiness probes)
+- **`/ready`** - Readiness probe (separate from health for graceful startup)
+- **`/info`** - Build info, version, environment metadata
+
+### Infrastructure Resources to Practice
+
+- **Prometheus** - Metrics collection and alerting
+- **Grafana** - Dashboards and visualization
+- **Docker** - Containerization
+- **Kubernetes** - Orchestration (deployments, services, ingress)
+- **CI/CD** - GitHub Actions, automated testing, deployments
+- **Logging** - Structured JSON logs for log aggregation (ELK, Loki)
+- **Tracing** - OpenTelemetry for distributed tracing
+
+### Development Guidelines
+
+- Keep the app simple - complexity should be in the infrastructure, not the code
+- Every new feature should have a DevOps use case (monitoring, scaling, deploying)
+- Prefer cloud-native patterns (12-factor app, stateless design, config via env vars)
+
 ## Coding Rules
 
 **Always add comments to explain configurations**, including:
