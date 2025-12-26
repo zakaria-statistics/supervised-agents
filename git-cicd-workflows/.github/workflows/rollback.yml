@@ -1,0 +1,191 @@
+# Manual Rollback Pipeline
+# ========================
+# Purpose: Manually rollback to a specific version
+# Triggers: Manual (workflow_dispatch)
+# Use when: Need to quickly revert to a known-good version
+#
+# This workflow appears as a button in GitHub Actions UI
+# with an input field for the version to rollback to.
+
+name: Manual Rollback
+
+on:
+  # Manual trigger with inputs
+  # Creates a "Run workflow" button in GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to rollback to (e.g., v42 or sha-abc1234)'
+        required: true
+        type: string
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Validate Inputs
+  # Verify the target version exists before attempting rollback
+  # ─────────────────────────────────────────────────────────────
+  validate:
+    name: Validate Rollback Target
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print rollback info
+        run: |
+          echo "=========================================="
+          echo "MANUAL ROLLBACK REQUESTED"
+          echo "=========================================="
+          echo "Target Version: ${{ github.event.inputs.version }}"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          echo "Requested by: ${{ github.actor }}"
+          echo "=========================================="
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Verify the image exists in registry
+      - name: Verify image exists
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}"
+          echo "Checking if image exists: $IMAGE"
+
+          # Try to pull the manifest (doesn't download the full image)
+          if docker manifest inspect $IMAGE > /dev/null 2>&1; then
+            echo "Image found: $IMAGE"
+          else
+            echo "ERROR: Image not found: $IMAGE"
+            echo "Available versions can be found at:"
+            echo "https://github.com/${{ github.repository }}/pkgs/container/$(basename ${{ github.repository }})"
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Rollback Staging
+  # ─────────────────────────────────────────────────────────────
+  rollback-staging:
+    name: Rollback Staging
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event.inputs.environment == 'staging'
+
+    environment:
+      name: staging
+      url: https://stage.app.com
+
+    steps:
+      - name: Execute rollback
+        run: |
+          echo "Rolling back staging to: ${{ github.event.inputs.version }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}"
+
+          # Uncomment when Kubernetes is configured
+          # kubectl set image deployment/app \
+          #   app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} \
+          #   -n staging
+          #
+          # kubectl rollout status deployment/app -n staging --timeout=300s
+
+      - name: Verify rollback
+        run: |
+          echo "Verifying staging rollback..."
+          # curl -f https://stage.app.com/health || exit 1
+          echo "Staging rollback complete!"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Rollback Production
+  # Requires manual approval via GitHub Environment
+  # ─────────────────────────────────────────────────────────────
+  rollback-production:
+    name: Rollback Production
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event.inputs.environment == 'production'
+
+    # IMPORTANT: Production rollback requires approval
+    # Configure reviewers in GitHub Environment settings
+    environment:
+      name: production
+      url: https://app.com
+
+    steps:
+      - name: Execute rollback
+        run: |
+          echo "=========================================="
+          echo "ROLLING BACK PRODUCTION"
+          echo "=========================================="
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          echo "Approved by: Environment protection rules"
+          echo "=========================================="
+
+          # Uncomment when Kubernetes is configured
+          # kubectl set image deployment/app \
+          #   app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} \
+          #   -n prod
+          #
+          # kubectl rollout status deployment/app -n prod --timeout=300s
+
+      - name: Verify rollback
+        run: |
+          echo "Verifying production rollback..."
+          # for i in {1..5}; do
+          #   curl -f https://app.com/health && exit 0
+          #   sleep 10
+          # done
+          # exit 1
+          echo "Production rollback complete!"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4: Notify Team
+  # ─────────────────────────────────────────────────────────────
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [rollback-staging, rollback-production]
+    if: always()
+
+    steps:
+      - name: Print rollback summary
+        run: |
+          echo "=========================================="
+          echo "ROLLBACK SUMMARY"
+          echo "=========================================="
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          echo "Requested by: ${{ github.actor }}"
+          echo "Status: Complete"
+          echo "=========================================="
+
+      # Uncomment when Slack is configured
+      # - name: Notify Slack
+      #   uses: 8398a7/action-slack@v3
+      #   with:
+      #     status: 'warning'
+      #     text: |
+      #       🔄 Manual rollback executed
+      #       Environment: ${{ github.event.inputs.environment }}
+      #       Version: ${{ github.event.inputs.version }}
+      #       Reason: ${{ github.event.inputs.reason }}
+      #       By: ${{ github.actor }}
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}

@@ -1,0 +1,239 @@
+# Deploy to Staging Pipeline
+# ===========================
+# Purpose: Build and deploy to staging environment
+# Triggers: Merge to develop branch (push event)
+# Deploys: Staging server (stage.app.com)
+#
+# This pipeline runs ONLY when code is merged to develop.
+# It builds the Docker image, pushes to registry, and deploys to staging.
+
+name: Deploy to Staging
+
+on:
+  # Merge = push to develop
+  # When a PR is merged, GitHub creates a push event to the target branch
+  push:
+    branches:
+      - develop
+
+# Only one deploy to staging at a time
+# If a new merge happens while deploying, cancel the old one
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+# Environment variables used across jobs
+# These should be configured in GitHub repository settings
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Build & Push Docker Image
+  # Creates the container image and pushes to GitHub Container Registry
+  # ─────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+
+    # Required permissions for pushing to GHCR
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      # Pass the image tag to subsequent jobs
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Docker Buildx enables advanced build features
+      # Required for multi-platform builds and caching
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login to GitHub Container Registry
+      # Uses GITHUB_TOKEN which is automatically provided
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Generate tags and labels for the image
+      # Creates: ghcr.io/owner/repo:sha-abc1234, ghcr.io/owner/repo:staging
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Tag with git SHA for traceability
+            type=sha,prefix=sha-
+            # Tag as 'staging' for easy reference
+            type=raw,value=staging
+
+      # Build and push the image
+      # Uses layer caching to speed up builds
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache layers in GitHub Actions cache
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Print image info
+        run: |
+          echo "Image pushed successfully!"
+          echo "Tags: ${{ steps.meta.outputs.tags }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Deploy to Staging
+  # Updates the Kubernetes deployment with the new image
+  # ─────────────────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    # GitHub Environment for staging
+    # Configure this in GitHub repo settings for:
+    # - Environment-specific secrets
+    # - Deployment history
+    # - Environment URL
+    environment:
+      name: staging
+      url: https://stage.app.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Option A: Deploy via kubectl (requires kubeconfig secret)
+      # Uncomment when Kubernetes is configured
+      # - name: Set up kubectl
+      #   uses: azure/setup-kubectl@v3
+      #   with:
+      #     version: 'v1.28.0'
+      #
+      # - name: Configure kubectl
+      #   run: |
+      #     mkdir -p ~/.kube
+      #     echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > ~/.kube/config
+      #
+      # - name: Deploy to Kubernetes
+      #   run: |
+      #     kubectl set image deployment/app \
+      #       app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
+      #       -n staging
+      #
+      # - name: Wait for rollout
+      #   run: |
+      #     kubectl rollout status deployment/app -n staging --timeout=300s
+
+      # Option B: Deploy via SSH (simpler, for VMs)
+      # Uncomment when SSH access is configured
+      # - name: Deploy via SSH
+      #   uses: appleboy/ssh-action@master
+      #   with:
+      #     host: ${{ secrets.STAGING_HOST }}
+      #     username: ${{ secrets.STAGING_USER }}
+      #     key: ${{ secrets.STAGING_SSH_KEY }}
+      #     script: |
+      #       docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging
+      #       docker stop app || true
+      #       docker rm app || true
+      #       docker run -d --name app -p 3000:3000 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging
+
+      # Placeholder: Print deployment info
+      - name: Deployment info
+        run: |
+          echo "=========================================="
+          echo "STAGING DEPLOYMENT"
+          echo "=========================================="
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Author: ${{ github.actor }}"
+          echo ""
+          echo "Configure actual deployment by uncommenting"
+          echo "kubectl or SSH deployment steps above."
+          echo "=========================================="
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Smoke Tests
+  # Verify the deployment is healthy
+  # ─────────────────────────────────────────────────────────────
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+
+    steps:
+      # Health check endpoints
+      # Uncomment when staging URL is available
+      # - name: Wait for deployment to be ready
+      #   run: sleep 30
+      #
+      # - name: Health check
+      #   run: |
+      #     curl -f https://stage.app.com/health || exit 1
+      #     echo "Health check passed!"
+      #
+      # - name: API status check
+      #   run: |
+      #     curl -f https://stage.app.com/ || exit 1
+      #     echo "API responding!"
+      #
+      # - name: Metrics endpoint check
+      #   run: |
+      #     curl -f https://stage.app.com/metrics || exit 1
+      #     echo "Metrics endpoint available!"
+
+      - name: Smoke tests placeholder
+        run: |
+          echo "Smoke tests would run here"
+          echo "Configure actual health checks when staging URL is available"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4: Notify Team
+  # Send notification on successful deployment
+  # ─────────────────────────────────────────────────────────────
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-staging, smoke-tests]
+    if: always()  # Run even if previous jobs failed
+
+    steps:
+      # Slack notification
+      # Uncomment when Slack webhook is configured
+      # - name: Notify Slack
+      #   uses: 8398a7/action-slack@v3
+      #   with:
+      #     status: ${{ job.status }}
+      #     fields: repo,message,commit,author,action,eventName,ref,workflow
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Print deployment summary
+        run: |
+          echo "=========================================="
+          echo "DEPLOYMENT SUMMARY"
+          echo "=========================================="
+          echo "Environment: Staging"
+          echo "Status: ${{ needs.deploy-staging.result }}"
+          echo "Smoke Tests: ${{ needs.smoke-tests.result }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          echo "=========================================="

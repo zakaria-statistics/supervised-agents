@@ -1,0 +1,335 @@
+# Deploy to Production Pipeline
+# ==============================
+# Purpose: Build and deploy to production environment
+# Triggers: Merge to main branch (push event)
+# Deploys: Production server (app.com)
+#
+# This pipeline runs ONLY when code is merged to main.
+# Includes approval gate, validation, and automatic rollback on failure.
+
+name: Deploy to Production
+
+on:
+  # Merge = push to main
+  push:
+    branches:
+      - main
+
+# Only one production deploy at a time
+# New deploys wait for previous to complete (no cancellation for prod!)
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false # Never cancel production deploys!
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Build Production Image
+  # Creates versioned container image for production
+  # ─────────────────────────────────────────────────────────────
+  build-production:
+    name: Build Production Image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      version: v${{ github.run_number }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Production gets multiple tags:
+      # - SHA for exact version tracking
+      # - 'latest' for convenience
+      # - version number for releases (v1, v2, etc.)
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+            type=raw,value=v${{ github.run_number }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Production builds should be optimized
+          build-args: |
+            NODE_ENV=production
+
+      - name: Print image info
+        run: |
+          echo "Production image built!"
+          echo "Version: v${{ github.run_number }}"
+          echo "Tags: ${{ steps.meta.outputs.tags }}"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Deploy to Production
+  # IMPORTANT: Has manual approval gate via GitHub Environment
+  # ─────────────────────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build-production
+
+    # GitHub Environment with protection rules
+    # Configure in: Settings > Environments > production
+    # - Required reviewers (e.g., Zack)
+    # - Wait timer (optional, e.g., 5 minutes)
+    # - Deployment branches (only main)
+    environment:
+      name: production
+      url: https://app.com
+
+    outputs:
+      # Store current image for potential rollback
+      previous-image: ${{ steps.save-current.outputs.previous }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Save current version for rollback
+      # Uncomment when Kubernetes is configured
+      # - name: Save current version for rollback
+      #   id: save-current
+      #   run: |
+      #     CURRENT=$(kubectl get deployment app -n prod \
+      #       -o jsonpath='{.spec.template.spec.containers[0].image}')
+      #     echo "previous=$CURRENT" >> $GITHUB_OUTPUT
+      #     echo "Current production image: $CURRENT"
+
+      # Option A: Deploy via kubectl
+      # - name: Deploy to Kubernetes
+      #   run: |
+      #     kubectl set image deployment/app \
+      #       app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
+      #       -n prod
+      #
+      # - name: Wait for rollout
+      #   run: |
+      #     kubectl rollout status deployment/app -n prod --timeout=600s
+
+      # Option B: Deploy via SSH
+      # - name: Deploy via SSH
+      #   uses: appleboy/ssh-action@master
+      #   with:
+      #     host: ${{ secrets.PROD_HOST }}
+      #     username: ${{ secrets.PROD_USER }}
+      #     key: ${{ secrets.PROD_SSH_KEY }}
+      #     script: |
+      #       docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ github.run_number }}
+      #       docker stop app || true
+      #       docker rm app || true
+      #       docker run -d --name app -p 3000:3000 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ github.run_number }}
+
+      - name: Deployment info
+        run: |
+          echo "=========================================="
+          echo "PRODUCTION DEPLOYMENT"
+          echo "=========================================="
+          echo "Version: v${{ github.run_number }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          echo "Commit: ${{ github.sha }}"
+          echo ""
+          echo "This job pauses for manual approval!"
+          echo "Configure environment protection in GitHub settings."
+          echo "=========================================="
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Validate Production
+  # Run health checks and smoke tests on production
+  # ─────────────────────────────────────────────────────────────
+  validate-production:
+    name: Validate Production
+    runs-on: ubuntu-latest
+    needs: deploy-production
+
+    steps:
+      # Health checks with retry
+      # Uncomment when production URL is available
+      # - name: Health check (with retries)
+      #   run: |
+      #     for i in {1..5}; do
+      #       echo "Health check attempt $i..."
+      #       if curl -f https://app.com/health; then
+      #         echo "Health check passed!"
+      #         exit 0
+      #       fi
+      #       echo "Health check failed, waiting 10s..."
+      #       sleep 10
+      #     done
+      #     echo "Health checks failed after 5 attempts"
+      #     exit 1
+      #
+      # - name: Smoke tests
+      #   run: |
+      #     curl -f https://app.com/ || exit 1
+      #     curl -f https://app.com/health || exit 1
+      #     echo "All smoke tests passed!"
+
+      - name: Validation placeholder
+        run: |
+          echo "Production validation would run here"
+          echo "Configure health checks when production URL is available"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4: Auto-Rollback on Failure
+  # If validation fails, automatically revert to previous version
+  # ─────────────────────────────────────────────────────────────
+  rollback:
+    name: Rollback (on failure)
+    runs-on: ubuntu-latest
+    needs: [deploy-production, validate-production]
+    # Only runs if validation FAILED
+    if: failure()
+
+    steps:
+      - name: Rollback to previous version
+        run: |
+          echo "=========================================="
+          echo "ROLLBACK TRIGGERED"
+          echo "=========================================="
+          echo "Validation failed - rolling back!"
+          echo "Previous image: ${{ needs.deploy-production.outputs.previous-image }}"
+          echo ""
+          echo "Automatic rollback would execute here:"
+          echo "kubectl rollout undo deployment/app -n prod"
+          echo "=========================================="
+
+      # Uncomment when Kubernetes is configured
+      # - name: Execute rollback
+      #   run: |
+      #     kubectl rollout undo deployment/app -n prod
+      #     kubectl rollout status deployment/app -n prod --timeout=300s
+
+      # Notify team of rollback
+      # - name: Notify team of rollback
+      #   uses: 8398a7/action-slack@v3
+      #   with:
+      #     status: 'failure'
+      #     text: '🚨 ROLLBACK: Production deploy failed, reverted to previous version'
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 5: Create GitHub Release
+  # Only runs if deployment was successful
+  # ─────────────────────────────────────────────────────────────
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-production, validate-production]
+    # Only runs if validation SUCCEEDED
+    if: success()
+
+    permissions:
+      contents: write # Required to create releases
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Need full history for changelog
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag (or all commits if no tags)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS=$(git log --oneline)
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --oneline)
+          fi
+
+          # Create changelog file
+          echo "## What's Changed" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "$COMMITS" | while read line; do
+            echo "- $line" >> CHANGELOG.md
+          done
+
+          cat CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print release info
+        run: |
+          echo "=========================================="
+          echo "RELEASE CREATED"
+          echo "=========================================="
+          echo "Version: v${{ github.run_number }}"
+          echo "URL: https://github.com/${{ github.repository }}/releases/tag/v${{ github.run_number }}"
+          echo "=========================================="
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 6: Notify Team
+  # Send notification on deployment completion
+  # ─────────────────────────────────────────────────────────────
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs:
+      [build-production, deploy-production, validate-production, create-release]
+    if: always()
+
+    steps:
+      # Uncomment when Slack is configured
+      # - name: Notify Slack
+      #   uses: 8398a7/action-slack@v3
+      #   with:
+      #     status: ${{ needs.validate-production.result }}
+      #     fields: repo,message,commit,author,ref
+      #     text: |
+      #       Production deployment ${{ needs.validate-production.result }}
+      #       Version: v${{ github.run_number }}
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Print deployment summary
+        run: |
+          echo "=========================================="
+          echo "PRODUCTION DEPLOYMENT SUMMARY"
+          echo "=========================================="
+          echo "Version: v${{ github.run_number }}"
+          echo "Build: ${{ needs.build-production.result }}"
+          echo "Deploy: ${{ needs.deploy-production.result }}"
+          echo "Validation: ${{ needs.validate-production.result }}"
+          echo "Release: ${{ needs.create-release.result }}"
+          echo "=========================================="

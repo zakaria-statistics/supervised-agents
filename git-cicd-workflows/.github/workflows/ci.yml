@@ -1,0 +1,267 @@
+# CI Pipeline - Test Only (No Deploy)
+# =====================================
+# Purpose: Validate code quality before merge
+# Triggers: Every push, every PR
+# Deploys: Nothing - this is TEST only
+#
+# This pipeline runs on:
+#   - Push to feature/*, fix/*, hotfix/* branches
+#   - PRs targeting develop or main
+#
+# It ensures code quality but never deploys anywhere.
+
+name: CI
+
+on:
+  # Run on push to feature branches
+  # This gives developers fast feedback on their commits
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+      - "hotfix/**"
+
+  # Run on PRs to develop or main
+  # Tests the MERGE COMMIT (source + target combined)
+  # This catches integration issues before merge
+  pull_request:
+    branches:
+      - develop
+      - main
+
+# Cancel in-progress runs for the same branch/PR
+# Saves CI minutes when pushing multiple commits quickly
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Lint & Format Check
+  # Fast feedback on code style (~1-2 min)
+  # ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint --if-present
+
+      - name: Check formatting
+        run: npm run format:check --if-present
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Unit Tests
+  # Core test suite, no external dependencies (~2-5 min)
+  # ─────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      # Coverage check - uncomment when coverage is configured
+      # - name: Check coverage threshold
+      #   run: npm run coverage
+      #   env:
+      #     MIN_COVERAGE: 80
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Build Check
+  # Verify the app builds and Docker image can be created (~2-3 min)
+  # Image is NOT pushed - just verifying it works
+  # ─────────────────────────────────────────────────────────────
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Verify the app builds (if build script exists)
+      - name: Build application
+        run: npm run build --if-present
+
+      # Verify Dockerfile works (only if Dockerfile exists)
+      - name: Build Docker image (verify only)
+        run: |
+          if [ -f Dockerfile ]; then
+            docker build -t app:ci-${{ github.sha }} .
+            echo "Docker image built successfully (not pushed)"
+          else
+            echo "No Dockerfile found, skipping Docker build"
+          fi
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4: Integration Tests (PR only)
+  # Runs tests with real database - slower but thorough
+  # Only runs on PRs (not feature branch pushes)
+  # ─────────────────────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Only run on PRs, not on regular pushes to feature branches
+    if: github.event_name == 'pull_request'
+
+    # Spin up services for integration testing
+    # These containers are available to the job
+    services:
+      # PostgreSQL for database tests
+      # Connection: postgres://postgres:postgres@localhost:5432/test
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # Redis for caching/session tests
+      # Connection: redis://localhost:6379
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run integration tests
+        run: npm run test:integration --if-present
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
+          REDIS_URL: redis://localhost:6379
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 5: Security Scan (PR only)
+  # Check for vulnerabilities in dependencies and code
+  # ─────────────────────────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Check npm dependencies for known vulnerabilities
+      # audit-level can be: info, low, moderate, high, critical
+      - name: NPM audit
+        run: npm audit --audit-level=high
+        continue-on-error: true # Don't fail build, just warn
+
+      # Trivy filesystem scan for vulnerabilities
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          severity: "HIGH,CRITICAL"
+          exit-code: "0" # Don't fail build, just report
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 6: E2E & Performance (PR to main only)
+  # Extra validation before production release
+  # ─────────────────────────────────────────────────────────────
+  release-validation:
+    name: Release Validation
+    runs-on: ubuntu-latest
+    # Only run on PRs targeting main (release candidates)
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # E2E tests - uncomment when configured
+      # - name: Run E2E tests
+      #   run: npm run test:e2e
+
+      # Performance tests - uncomment when configured
+      # - name: Run performance tests
+      #   run: |
+      #     npm install -g k6
+      #     k6 run tests/load-test.js
+
+      - name: Generate release notes preview
+        run: |
+          echo "## Changes in this release" > release-notes.md
+          git log origin/main..HEAD --oneline >> release-notes.md || echo "First release" >> release-notes.md
+          cat release-notes.md
