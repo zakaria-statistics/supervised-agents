@@ -1,0 +1,19 @@
+Physical LAN (192.168.11.0/24)
+          │
+          │ eth0
+    ┌─────┴─────┐
+    │   HOST    │
+    │  (ROUTER) │ ◄── ip_forward + routing table + iptables
+    └─┬───────┬─┘
+      │       │
+      │       │ gateway IPs (10.10.0.1 and 10.20.0.1)
+      │       │
+  Bridge A  Bridge B
+  (switch)  (switch)
+      │       │
+ Container  Container
+ 10.10.0.2  10.20.0.2
+
+ Bridges handle Layer 2 switching within their subnet. 
+ The host handles Layer 3 routing between subnets. 
+ Docker combines both inside one machine, which is why the boundaries can feel blurry.
