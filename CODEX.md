@@ -52,3 +52,8 @@
 ## Configuration & Runtime Notes
 - `PORT` is configurable via environment variables; default is `3000`.
 - Keep responses JSON-only and include `Content-Type: application/json`.
+
+## DevOps & Cloud Practice Notes
+- Include DevOps-facing endpoints (ex: `/metrics` for Prometheus scraping) when expanding the API surface.
+- Document any infra-oriented routes, headers, or auth expectations alongside feature changes.
+- Prefer lightweight, observable implementations that expose service health, uptime, and basic runtime info for ops workflows.
