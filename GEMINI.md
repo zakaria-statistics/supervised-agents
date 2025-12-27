@@ -50,3 +50,10 @@ The application is a simple HTTP server defined in `src/index.js`.
 - **Guidelines:** Shared agent guidelines are in `agents-sync/AGENTS.md`.
 - **Restricted Access:** Always ask for explicit authorization before modifying any files within the `agents-sync/` directory.
 - **Roadmap:** Tracking progress on Dockerization, CI/CD, and Cloud Deployment.
+
+### DevOps & Cloud Focus
+- **Goal:** Build functionalities dedicated to DevOps and Cloud workflows.
+- **Requirements:**
+  - **Observability:** Implement endpoints for Prometheus metrics (e.g., `/metrics`) and enhanced health checks.
+  - **Cloud-Native:** Ensure the application supports containerization, orchestration, and configuration via environment variables.
+  - **Resources:** Add necessary resources for the stack (e.g., Dockerfiles, K8s manifests, monitoring configs) to practice DevOps concepts.
